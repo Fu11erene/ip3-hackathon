@@ -15,11 +15,22 @@ class ItemOut(BaseModel):
 class UserRegister(BaseModel):
     username: str
     password: str
+    phone_number: str
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class OtpChallengeResponse(BaseModel):
+    challenge_id: str
+    expires_in: int
+
+
+class OtpVerifyRequest(BaseModel):
+    challenge_id: str
+    code: str
 
 
 class TokenResponse(BaseModel):

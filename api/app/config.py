@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-me"
     access_token_expire_minutes: int = 60
 
+    nexway_api_base_url: str = "https://example.invalid"
+    nexway_api_token: str = "changeme"
+    nexway_user_reference_prefix: str = "teamip3-hackathon"
+
+    otp_code_length: int = 6
+    otp_expire_minutes: int = 5
+    otp_max_attempts: int = 5
+
     @property
     def database_url(self) -> str:
         return (
