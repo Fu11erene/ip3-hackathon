@@ -2,13 +2,35 @@
 
 Docker Composeで構築したWeb / API / DBの3層構成。
 
-## 構成
+## 技術スタック
 
-| サービス | 内容                                                                                 |
-| -------- | ------------------------------------------------------------------------------------ |
-| `web`    | nginx。静的ファイル(`web/html`)を配信し、`/api/` を `api` サービスへリバースプロキシ |
-| `api`    | Python + [uv](https://docs.astral.sh/uv/) + FastAPI                                  |
-| `db`     | PostgreSQL 16                                                                        |
+| 分類 | 技術・ライブラリ | 用途 |
+| --- | --- | --- |
+| フロントエンド | HTML / CSS / JavaScript | ログイン、OTP入力、認証後の画面を提供 |
+| Webサーバー | nginx 1.27 | 静的ファイルの配信と、`/api/`からAPIへのリバースプロキシ |
+| API | Python 3.12 / FastAPI / Uvicorn | REST APIと認証処理を非同期で実行 |
+| データアクセス | SQLAlchemy 2 / asyncpg | PostgreSQLへの非同期アクセスとORM |
+| 設定・バリデーション | Pydantic Settings / Pydantic | 環境変数の読み込みとリクエスト・レスポンスの検証 |
+| パスワード認証 | bcrypt | パスワードのハッシュ化と照合 |
+| OTP | Python標準ライブラリの`secrets` / `hmac` / `hashlib` | OTP生成とHMAC-SHA256によるハッシュ化 |
+| トークン認証 | PyJWT | HS256署名のJSON Web Token（JWT）を発行・検証 |
+| 外部API通信 | HTTPX | Nexway CPaaS NOWのSMS送信APIを非同期で呼び出し |
+| データベース | PostgreSQL 16 | ユーザーとOTPチャレンジを永続化 |
+| 実行環境 | Docker / Docker Compose / uv | 3サービスの構築・起動とPython依存関係の管理 |
+
+`pyproject.toml`にはAlembicも含まれていますが、現時点ではマイグレーションを使用していません。API起動時にSQLAlchemyの`Base.metadata.create_all()`でテーブルを作成します。
+
+## アーキテクチャ
+
+Docker Compose上で、Web・API・DBを分離した3層構成です。
+
+| サービス | 責務 |
+| --- | --- |
+| `web` | nginxで`web/html`の静的ファイルを配信し、`/api/`へのリクエストを`api`へ転送 |
+| `api` | FastAPIでユーザー認証、OTPの発行・検証、JWTの発行、Nexway APIとの通信を担当 |
+| `db` | PostgreSQLでユーザー情報とOTPチャレンジを永続化。Dockerボリューム`db_data`を使用 |
+
+ブラウザは`http://localhost:8080`のnginxだけにアクセスします。nginxは画面を返し、`/api/`から始まるリクエストを内部ネットワークのFastAPIへ転送します。FastAPIはPostgreSQLへ非同期でアクセスし、OTPの送信時だけ外部のNexway CPaaS NOWを呼び出します。
 
 ## システム構成図
 
@@ -65,10 +87,10 @@ sequenceDiagram
     U->>W: POST /api/auth/otp/verify {challenge_id, code}
     W->>A: proxy_pass /auth/otp/verify
     A->>D: SELECT * FROM otp_challenges WHERE id = challenge_id
-    D-->>A: code_hash, expires_at, attempts_remaining, consumed
+    D-->>A: code_hash, expires_at, attempts_remaining
     A->>A: 有効期限 / 試行回数 / ハッシュ一致を検証
     alt 検証成功
-        A->>D: UPDATE otp_challenges SET consumed = true
+        A->>D: DELETE FROM otp_challenges WHERE id = challenge_id
         A-->>U: 200 {access_token (JWT)}
         U->>U: access_token を localStorage に保存し welcome.html へ遷移
     else 検証失敗
@@ -101,7 +123,7 @@ ID/パスワード認証に加えて、[Nexway CPaaS NOW](https://smslink.nexway
 3. `otp.html` でSMSに届いたコードを入力(`POST /auth/otp/verify`)
 4. コードが正しければアクセストークンを発行し、`welcome.html` へ遷移
 
-OTPコードはハッシュ化して保存し、有効期限(既定5分)・試行回数制限(既定5回)・使い捨て(検証成功後は再利用不可)を設けています。
+OTPコードはハッシュ化して保存し、有効期限(既定5分)・試行回数制限(既定5回)を設けています。検証に成功したOTPチャレンジはデータベースから削除するため、再利用できません。
 
 CPaaS NOWのAPIホスト・APIトークンはハッシュソン当日に配布されるため、`.env` の以下の値を差し替えてください。
 
@@ -110,7 +132,9 @@ NEXWAY_API_BASE_URL=<配布されたホストURL>
 NEXWAY_API_TOKEN=<配布されたAPIトークン>
 ```
 
-開発環境のテスト用宛先(例: `09001111101` 〜 `09001111104` は `delivered`、`09001111201` 〜は `failed` を返す)が用意されているため、デモユーザーの電話番号は `09001111101` を初期値にしています。
+検証環境では、正常送信用に`9001111101`〜`9001111104`、エラー確認用に`9001111201`〜`9001111204`と`9002222001`が用意されています。デモユーザーの電話番号は、画面上で扱いやすい国内形式の`09001111101`を初期値にしています。SMS送信時に先頭の`0`を除去し、検証環境の`9001111101`へ変換します。
+
+検証環境のエンドポイントとアクセストークンは`.env`へ設定してください。アクセストークンは秘密情報のため、READMEやGitの管理対象には含めません。また、検証環境へ大量のリクエストを送らないでください。送信結果を確認する場合は、アイピーキューブ社員へ問い合わせてください。
 
 ### 接続情報が届く前のローカルテスト方法
 

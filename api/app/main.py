@@ -141,7 +141,7 @@ async def verify_otp(body: OtpVerifyRequest, db: AsyncSession = Depends(get_db))
         detail="ワンタイムパスワードが正しくないか、有効期限が切れています",
     )
 
-    if challenge is None or challenge.consumed:
+    if challenge is None:
         raise invalid
 
     if datetime.now(timezone.utc) > challenge.expires_at.replace(tzinfo=timezone.utc):
@@ -155,11 +155,12 @@ async def verify_otp(body: OtpVerifyRequest, db: AsyncSession = Depends(get_db))
         await db.commit()
         raise invalid
 
-    challenge.consumed = True
-    await db.commit()
-
     user_result = await db.execute(select(User).where(User.id == challenge.user_id))
     user = user_result.scalar_one()
+
+    await db.delete(challenge)
+    await db.commit()
+
     return TokenResponse(access_token=create_access_token(user.username))
 
 

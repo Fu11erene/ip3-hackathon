@@ -31,4 +31,3 @@ class OtpChallenge(Base):
     code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    consumed: Mapped[bool] = mapped_column(default=False)
