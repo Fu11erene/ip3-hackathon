@@ -1,17 +1,30 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import (
+    create_access_token,
+    generate_otp_code,
+    get_current_user,
+    hash_otp_code,
+    hash_password,
+    verify_otp_code,
+    verify_password,
+)
+from app.config import settings
 from app.db import Base, engine, get_db, async_session
-from app.models import Item, User
+from app.models import Item, OtpChallenge, User
+from app.nexway import NexwaySmsError, send_sms
 from app.schemas import (
     ItemCreate,
     ItemOut,
     LoginRequest,
+    OtpChallengeResponse,
+    OtpVerifyRequest,
     TokenResponse,
     UserOut,
     UserRegister,
@@ -19,6 +32,7 @@ from app.schemas import (
 
 DEMO_USERNAME = "demo"
 DEMO_PASSWORD = "password"
+DEMO_PHONE_NUMBER = "09001111101"  # CPaaS NOW 開発環境のテスト用宛先(status: delivered)
 
 
 @asynccontextmanager
@@ -29,7 +43,13 @@ async def lifespan(app: FastAPI):
     async with async_session() as session:
         result = await session.execute(select(User).where(User.username == DEMO_USERNAME))
         if result.scalar_one_or_none() is None:
-            session.add(User(username=DEMO_USERNAME, password_hash=hash_password(DEMO_PASSWORD)))
+            session.add(
+                User(
+                    username=DEMO_USERNAME,
+                    password_hash=hash_password(DEMO_PASSWORD),
+                    phone_number=DEMO_PHONE_NUMBER,
+                )
+            )
             await session.commit()
 
     yield
@@ -56,15 +76,20 @@ async def register(body: UserRegister, db: AsyncSession = Depends(get_db)):
     if result.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="そのユーザー名は既に使用されています")
 
-    user = User(username=body.username, password_hash=hash_password(body.password))
+    user = User(
+        username=body.username,
+        password_hash=hash_password(body.password),
+        phone_number=body.phone_number,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
     return user
 
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/auth/login", response_model=OtpChallengeResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """ID/PWを検証し、OTPをSMS送信してチャレンジIDを発行する(フロー②)。"""
     result = await db.execute(select(User).where(User.username == body.username))
     user = result.scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
@@ -72,6 +97,69 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="ユーザー名またはパスワードが正しくありません",
         )
+
+    code = generate_otp_code()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.otp_expire_minutes)
+    challenge = OtpChallenge(
+        user_id=user.id,
+        code_hash=hash_otp_code(code),
+        expires_at=expires_at,
+        attempts_remaining=settings.otp_max_attempts,
+    )
+    db.add(challenge)
+    await db.commit()
+    await db.refresh(challenge)
+
+    try:
+        await send_sms(
+            to=user.phone_number,
+            text=f"ワンタイムパスワードは {code} です。",
+            user_reference=f"{settings.nexway_user_reference_prefix}-{challenge.id}",
+        )
+    except NexwaySmsError as exc:
+        await db.delete(challenge)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"SMS送信に失敗しました: {exc.message}",
+        )
+
+    return OtpChallengeResponse(
+        challenge_id=challenge.id,
+        expires_in=settings.otp_expire_minutes * 60,
+    )
+
+
+@app.post("/auth/otp/verify", response_model=TokenResponse)
+async def verify_otp(body: OtpVerifyRequest, db: AsyncSession = Depends(get_db)):
+    """OTPを検証し、成功すればアクセストークンを発行する(フロー④)。"""
+    result = await db.execute(select(OtpChallenge).where(OtpChallenge.id == body.challenge_id))
+    challenge = result.scalar_one_or_none()
+
+    invalid = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="ワンタイムパスワードが正しくないか、有効期限が切れています",
+    )
+
+    if challenge is None or challenge.consumed:
+        raise invalid
+
+    if datetime.now(timezone.utc) > challenge.expires_at.replace(tzinfo=timezone.utc):
+        raise invalid
+
+    if challenge.attempts_remaining <= 0:
+        raise invalid
+
+    if not verify_otp_code(body.code, challenge.code_hash):
+        challenge.attempts_remaining -= 1
+        await db.commit()
+        raise invalid
+
+    challenge.consumed = True
+    await db.commit()
+
+    user_result = await db.execute(select(User).where(User.id == challenge.user_id))
+    user = user_result.scalar_one()
     return TokenResponse(access_token=create_access_token(user.username))
 
 

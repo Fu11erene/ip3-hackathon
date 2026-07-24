@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -20,6 +23,18 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode(), password_hash.encode())
+
+
+def generate_otp_code() -> str:
+    return "".join(str(secrets.randbelow(10)) for _ in range(settings.otp_code_length))
+
+
+def hash_otp_code(code: str) -> str:
+    return hmac.new(settings.secret_key.encode(), code.encode(), hashlib.sha256).hexdigest()
+
+
+def verify_otp_code(code: str, code_hash: str) -> bool:
+    return hmac.compare_digest(hash_otp_code(code), code_hash)
 
 
 def create_access_token(username: str) -> str:
