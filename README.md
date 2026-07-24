@@ -15,6 +15,7 @@ Docker Composeで構築したWeb / API / DBの3層構成。
 ```mermaid
 graph LR
     U["ブラウザ"]
+    N["Nexway CPaaS NOW\n(外部SMS送信API)"]
 
     subgraph docker["Docker Compose ネットワーク"]
         W["web (nginx)\n:8080 → :80"]
@@ -26,9 +27,11 @@ graph LR
     W -->|"静的ファイル\nweb/html/*.html"| U
     W -->|"location /api/ → proxy_pass"| A
     A -->|"asyncpg (SQLAlchemy async)"| D
+    A -->|"POST /api/v1/short_messages"| N
+    N -->|"SMS配信"| U
 ```
 
-認証まわりの処理の流れ（ログイン → 保護ページ表示）:
+認証まわりの処理の流れ(ログイン → SMS OTP検証 → 保護ページ表示):
 
 ```mermaid
 sequenceDiagram
@@ -36,6 +39,7 @@ sequenceDiagram
     participant W as web (nginx)
     participant A as api (FastAPI)
     participant D as db (PostgreSQL)
+    participant N as Nexway CPaaS NOW
 
     U->>W: GET /
     W-->>U: index.html (ログイン画面)
@@ -43,10 +47,31 @@ sequenceDiagram
     U->>W: POST /api/auth/login {username, password}
     W->>A: proxy_pass /auth/login
     A->>D: SELECT * FROM users WHERE username = ?
-    D-->>A: password_hash
+    D-->>A: password_hash, phone_number
     A->>A: bcrypt.checkpw() で照合
-    A-->>U: 200 {access_token (JWT)}
-    U->>U: access_token を localStorage に保存し welcome.html へ遷移
+    A->>A: OTPコード生成 + HMAC-SHA256でハッシュ化
+    A->>D: INSERT INTO otp_challenges (code_hash, expires_at, attempts_remaining)
+    A->>N: POST /api/v1/short_messages {to, text, user_reference}
+    N-->>A: 202 Accepted {delivery_order_id}
+    A-->>U: 200 {challenge_id, expires_in}
+    U->>U: challenge_id を sessionStorage に保存し otp.html へ遷移
+
+    N-->>U: SMSでワンタイムパスワードを受信
+
+    U->>W: POST /api/auth/otp/verify {challenge_id, code}
+    W->>A: proxy_pass /auth/otp/verify
+    A->>D: SELECT * FROM otp_challenges WHERE id = challenge_id
+    D-->>A: code_hash, expires_at, attempts_remaining, consumed
+    A->>A: 有効期限 / 試行回数 / ハッシュ一致を検証
+    alt 検証成功
+        A->>D: UPDATE otp_challenges SET consumed = true
+        A-->>U: 200 {access_token (JWT)}
+        U->>U: access_token を localStorage に保存し welcome.html へ遷移
+    else 検証失敗
+        A->>D: UPDATE otp_challenges SET attempts_remaining -= 1
+        A-->>U: 401 Unauthorized
+        U->>U: otp.html にエラー表示(再入力 or ログイン画面に戻る)
+    end
 
     U->>W: GET /api/auth/me (Authorization: Bearer <token>)
     W->>A: proxy_pass /auth/me
