@@ -37,6 +37,39 @@ NEXWAY_API_TOKEN=<配布されたAPIトークン>
 
 開発環境のテスト用宛先(例: `09001111101` 〜 `09001111104` は `delivered`、`09001111201` 〜は `failed` を返す)が用意されているため、デモユーザーの電話番号は `09001111101` を初期値にしています。
 
+### 接続情報が届く前のローカルテスト方法
+
+CPaaS NOWの接続情報が届くまでは、`POST /api/v1/short_messages` を模したモックサーバーを立ててブラウザから通しでテストできます。
+
+```bash
+# 1. ローカルでモックSMSサーバーを起動(202 Acceptedを返し、送信内容を標準出力に表示)
+python3 - <<'EOF' &
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        print("RECEIVED:", json.loads(self.rfile.read(length)), flush=True)
+        self.send_response(202)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"delivery_order_id": 1, "accepted_at": "2026-01-01T00:00:00Z"}).encode())
+    def log_message(self, *args): pass
+
+HTTPServer(("0.0.0.0", 9999), Handler).serve_forever()
+EOF
+
+# 2. .env のホストをモックに向ける
+#    NEXWAY_API_BASE_URL=http://host.docker.internal:9999
+docker compose up -d api
+
+# 3. ブラウザで http://localhost:8080 からログイン
+#    OTPコードはモックサーバーの標準出力(RECEIVED: ... "text": "ワンタイムパスワードは ****** です。")に表示される
+```
+
+ログインボタンを押すたびに新しいOTPチャレンジ・新しいコードが発行される点に注意してください(古いコードは無効)。接続情報が届いたら `NEXWAY_API_BASE_URL` / `NEXWAY_API_TOKEN` を本物の値に戻して `docker compose up -d api` してください。
+
 ## エンドポイント
 
 - Web: http://localhost:8080
