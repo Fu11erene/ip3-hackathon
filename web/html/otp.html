@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ログイン - ip3-hackathon</title>
+    <title>ワンタイムパスワード入力 - ip3-hackathon</title>
     <style>
       * {
         box-sizing: border-box;
@@ -26,8 +26,14 @@
         max-width: 360px;
       }
       h1 {
-        margin: 0 0 1.5rem;
+        margin: 0 0 0.5rem;
         font-size: 1.4rem;
+        text-align: center;
+      }
+      p.desc {
+        margin: 0 0 1.5rem;
+        font-size: 0.85rem;
+        color: #555;
         text-align: center;
       }
       label {
@@ -42,7 +48,9 @@
         margin-bottom: 1rem;
         border: 1px solid #ccc;
         border-radius: 6px;
-        font-size: 1rem;
+        font-size: 1.3rem;
+        letter-spacing: 0.3em;
+        text-align: center;
       }
       button {
         width: 100%;
@@ -67,33 +75,29 @@
         margin: -0.5rem 0 1rem;
         min-height: 1.1em;
       }
-      .hint {
+      .back {
+        display: block;
         margin-top: 1.2rem;
-        font-size: 0.75rem;
-        color: #888;
+        font-size: 0.8rem;
         text-align: center;
+        color: #2563eb;
+        text-decoration: none;
       }
     </style>
   </head>
   <body>
     <div class="card">
-      <h1>ログイン</h1>
-      <form id="login-form">
-        <label for="username">ログイン名</label>
+      <h1>ワンタイムパスワード入力</h1>
+      <p class="desc">SMSに届いた6桁のコードを入力してください</p>
+      <form id="otp-form">
+        <label for="code">ワンタイムパスワード</label>
         <input
           type="text"
-          id="username"
-          name="username"
-          autocomplete="username"
-          required
-        />
-
-        <label for="password">パスワード</label>
-        <input
-          type="password"
-          id="password"
-          name="password"
-          autocomplete="current-password"
+          id="code"
+          name="code"
+          inputmode="numeric"
+          maxlength="6"
+          autocomplete="one-time-code"
           required
         />
 
@@ -101,41 +105,42 @@
 
         <button type="submit" id="submit-btn">ログイン</button>
       </form>
-      <p class="hint">デモ用アカウント: demo / password</p>
+      <a class="back" href="index.html">ログイン画面に戻る</a>
     </div>
 
     <script>
-      const form = document.getElementById("login-form");
+      const challengeId = sessionStorage.getItem("otp_challenge_id");
+      if (!challengeId) {
+        window.location.href = "index.html";
+      }
+
+      const form = document.getElementById("otp-form");
       const errorEl = document.getElementById("error");
       const submitBtn = document.getElementById("submit-btn");
-
-      if (localStorage.getItem("access_token")) {
-        window.location.href = "welcome.html";
-      }
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         errorEl.textContent = "";
         submitBtn.disabled = true;
 
-        const username = document.getElementById("username").value;
-        const password = document.getElementById("password").value;
+        const code = document.getElementById("code").value;
 
         try {
-          const res = await fetch("/api/auth/login", {
+          const res = await fetch("/api/auth/otp/verify", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password }),
+            body: JSON.stringify({ challenge_id: challengeId, code }),
           });
 
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data.detail || "ログインに失敗しました");
+            throw new Error(data.detail || "ワンタイムパスワードの検証に失敗しました");
           }
 
           const data = await res.json();
-          sessionStorage.setItem("otp_challenge_id", data.challenge_id);
-          window.location.href = "otp.html";
+          sessionStorage.removeItem("otp_challenge_id");
+          localStorage.setItem("access_token", data.access_token);
+          window.location.href = "welcome.html";
         } catch (err) {
           errorEl.textContent = err.message;
         } finally {
