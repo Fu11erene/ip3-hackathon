@@ -36,6 +36,19 @@
         color: #555;
         text-align: center;
       }
+      .status {
+        margin: 0 0 1rem;
+        padding: 0.65rem;
+        border-radius: 6px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-size: 0.85rem;
+        text-align: center;
+      }
+      .status.failed {
+        background: #fef2f2;
+        color: #dc2626;
+      }
       label {
         display: block;
         font-size: 0.85rem;
@@ -88,7 +101,8 @@
   <body>
     <div class="card">
       <h1>ワンタイムパスワード入力</h1>
-      <p class="desc">SMSに届いた6桁のコードを入力してください</p>
+      <p class="desc">SMSの配信状況を確認しています</p>
+      <p class="status" id="delivery-status">SMS送信リクエストを受け付けました</p>
       <form id="otp-form">
         <label for="code">ワンタイムパスワード</label>
         <input
@@ -117,13 +131,52 @@
       const form = document.getElementById("otp-form");
       const errorEl = document.getElementById("error");
       const submitBtn = document.getElementById("submit-btn");
+      const codeInput = document.getElementById("code");
+      const deliveryStatusEl = document.getElementById("delivery-status");
+      let statusTimer;
+
+      codeInput.disabled = true;
+      submitBtn.disabled = true;
+
+      async function checkDeliveryStatus() {
+        try {
+          const res = await fetch(`/api/auth/otp/${encodeURIComponent(challengeId)}/status`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data.detail || "SMSの配信状況を確認できませんでした");
+          }
+
+          deliveryStatusEl.textContent = data.message;
+          deliveryStatusEl.classList.toggle("failed", data.delivery_status === "failed");
+
+          if (data.delivery_status === "delivered") {
+            codeInput.disabled = false;
+            submitBtn.disabled = false;
+            codeInput.focus();
+            return;
+          }
+
+          if (data.delivery_status === "failed") {
+            codeInput.disabled = true;
+            submitBtn.disabled = true;
+            return;
+          }
+        } catch (err) {
+          deliveryStatusEl.textContent = err.message;
+        }
+
+        statusTimer = window.setTimeout(checkDeliveryStatus, 5000);
+      }
+
+      checkDeliveryStatus();
+      window.addEventListener("beforeunload", () => window.clearTimeout(statusTimer));
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         errorEl.textContent = "";
         submitBtn.disabled = true;
 
-        const code = document.getElementById("code").value;
+        const code = codeInput.value;
 
         try {
           const res = await fetch("/api/auth/otp/verify", {

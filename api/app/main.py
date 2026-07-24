@@ -19,12 +19,13 @@ from app.auth import (
 from app.config import settings
 from app.db import Base, engine, get_db, async_session
 from app.models import Item, OtpChallenge, User
-from app.nexway import NexwaySmsError, send_sms
+from app.nexway import NexwaySmsError, get_sms_delivery_status, send_sms
 from app.schemas import (
     ItemCreate,
     ItemOut,
     LoginRequest,
     OtpChallengeResponse,
+    OtpDeliveryStatusResponse,
     OtpVerifyRequest,
     TokenResponse,
     UserOut,
@@ -113,7 +114,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(challenge)
 
     try:
-        await send_sms(
+        sms_result = await send_sms(
             to=user.phone_number,
             text=f"ワンタイムパスワードは {code} です。",
             user_reference=f"ip1-{user.username}"[:40],
@@ -126,6 +127,10 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail=f"SMS送信に失敗しました: {exc.message}",
         )
 
+    challenge.delivery_order_id = sms_result["delivery_order_id"]
+    challenge.delivery_status = "pending"
+    await db.commit()
+
     if settings.log_otp_code:
         logger.warning(
             "開発用OTP: username=%s challenge_id=%s code=%s",
@@ -137,6 +142,45 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     return OtpChallengeResponse(
         challenge_id=challenge.id,
         expires_in=settings.otp_expire_minutes * 60,
+        delivery_status=challenge.delivery_status,
+    )
+
+
+@app.get("/auth/otp/{challenge_id}/status", response_model=OtpDeliveryStatusResponse)
+async def otp_delivery_status(challenge_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(OtpChallenge).where(OtpChallenge.id == challenge_id))
+    challenge = result.scalar_one_or_none()
+    if challenge is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OTPチャレンジが見つかりません")
+
+    if datetime.now(timezone.utc) > challenge.expires_at.replace(tzinfo=timezone.utc):
+        return OtpDeliveryStatusResponse(
+            delivery_status="failed",
+            message="ワンタイムパスワードの有効期限が切れました",
+        )
+
+    if challenge.delivery_status == "pending" and challenge.delivery_order_id is not None:
+        try:
+            delivery_status, delivery_error = await get_sms_delivery_status(challenge.delivery_order_id)
+        except NexwaySmsError as exc:
+            logger.warning(
+                "SMS配信結果の取得に失敗: challenge_id=%s error=%s",
+                challenge.id,
+                exc.message,
+            )
+        else:
+            challenge.delivery_status = delivery_status
+            challenge.delivery_error = delivery_error
+            await db.commit()
+
+    messages = {
+        "pending": "SMSの配信結果を確認しています",
+        "delivered": "SMSを配信しました。届いたコードを入力してください",
+        "failed": challenge.delivery_error or "SMSを配信できませんでした",
+    }
+    return OtpDeliveryStatusResponse(
+        delivery_status=challenge.delivery_status,
+        message=messages[challenge.delivery_status],
     )
 
 

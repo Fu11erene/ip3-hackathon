@@ -26,11 +26,17 @@ class LoginRequest(BaseModel):
 class OtpChallengeResponse(BaseModel):
     challenge_id: str
     expires_in: int
+    delivery_status: str
 
 
 class OtpVerifyRequest(BaseModel):
     challenge_id: str
     code: str
+
+
+class OtpDeliveryStatusResponse(BaseModel):
+    delivery_status: str
+    message: str
 
 
 class TokenResponse(BaseModel):
