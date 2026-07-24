@@ -15,6 +15,7 @@ Docker Composeで構築したWeb / API / DBの3層構成。
 ```mermaid
 graph LR
     U["ブラウザ"]
+    S["スマートフォン\n(SMSアプリ)"]
     N["Nexway CPaaS NOW\n(外部SMS送信API)"]
 
     subgraph docker["Docker Compose ネットワーク"]
@@ -28,7 +29,8 @@ graph LR
     W -->|"location /api/ → proxy_pass"| A
     A -->|"asyncpg (SQLAlchemy async)"| D
     A -->|"POST /api/v1/short_messages"| N
-    N -->|"SMS配信"| U
+    N -->|"SMS配信"| S
+    S -.->|"OTPを確認して入力"| U
 ```
 
 認証まわりの処理の流れ(ログイン → SMS OTP検証 → 保護ページ表示):
@@ -36,6 +38,7 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant U as ブラウザ
+    participant S as スマートフォン (SMS)
     participant W as web (nginx)
     participant A as api (FastAPI)
     participant D as db (PostgreSQL)
@@ -56,7 +59,8 @@ sequenceDiagram
     A-->>U: 200 {challenge_id, expires_in}
     U->>U: challenge_id を sessionStorage に保存し otp.html へ遷移
 
-    N-->>U: SMSでワンタイムパスワードを受信
+    N-->>S: SMSでワンタイムパスワードを配信
+    S-->>U: ユーザーがOTPを確認して入力
 
     U->>W: POST /api/auth/otp/verify {challenge_id, code}
     W->>A: proxy_pass /auth/otp/verify
