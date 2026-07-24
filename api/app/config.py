@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     postgres_host: str = "db"
     postgres_port: int = 5432
 
+    secret_key: str = "dev-secret-change-me"
+    access_token_expire_minutes: int = 60
+
     @property
     def database_url(self) -> str:
         return (
