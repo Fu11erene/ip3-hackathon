@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     otp_code_length: int = 6
     otp_expire_minutes: int = 5
     otp_max_attempts: int = 5
+    login_max_attempts: int = 5
+    login_lock_minutes: int = 15
+    otp_resend_interval_seconds: int = 60
     log_otp_code: bool = False
 
     @property

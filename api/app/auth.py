@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,49 @@ from app.db import get_db
 from app.models import User
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+COMMON_PASSWORDS = {
+    "123456789012",
+    "password",
+    "password123",
+    "qwerty123456",
+    "letmein123456",
+}
+
+
+class PasswordPolicyError(ValueError):
+    pass
+
+
+def validate_password_policy(password: str, username: str) -> None:
+    violations = []
+
+    if len(password) < 12:
+        violations.append("12文字以上")
+    if len(password) > 64:
+        violations.append("64文字以下")
+    if len(password.encode("utf-8")) > 72:
+        violations.append("UTF-8で72バイト以下")
+    if not re.search(r"[A-Z]", password):
+        violations.append("英大文字を1文字以上")
+    if not re.search(r"[a-z]", password):
+        violations.append("英小文字を1文字以上")
+    if not re.search(r"[0-9]", password):
+        violations.append("数字を1文字以上")
+    if not re.search(r"[^A-Za-z0-9\s]", password):
+        violations.append("記号を1文字以上")
+    if re.search(r"\s", password):
+        violations.append("空白を含めない")
+
+    normalized_password = re.sub(r"[^a-z0-9]", "", password.lower())
+    normalized_username = re.sub(r"[^a-z0-9]", "", username.lower())
+    if len(normalized_username) >= 3 and normalized_username in normalized_password:
+        violations.append("ユーザー名を含めない")
+    if password.lower() in COMMON_PASSWORDS:
+        violations.append("一般的な弱いパスワードを使用しない")
+
+    if violations:
+        raise PasswordPolicyError("パスワードは次の条件を満たしてください: " + "、".join(violations))
 
 
 def hash_password(password: str) -> str:

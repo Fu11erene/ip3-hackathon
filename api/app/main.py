@@ -1,4 +1,5 @@
 import logging
+import math
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -8,11 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
+    PasswordPolicyError,
     create_access_token,
     generate_otp_code,
     get_current_user,
     hash_otp_code,
     hash_password,
+    validate_password_policy,
     verify_otp_code,
     verify_password,
 )
@@ -33,8 +36,8 @@ from app.schemas import (
 )
 
 DEMO_USERNAME = "demo"
-DEMO_PASSWORD = "password"
-DEMO_PHONE_NUMBER = "09001111101"  # CPaaS NOW 開発環境のテスト用宛先(status: delivered)
+DEMO_PASSWORD = "Hackathon1!Safe"
+DEMO_PHONE_NUMBER = "07020213632"
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -75,6 +78,11 @@ async def health():
 
 @app.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(body: UserRegister, db: AsyncSession = Depends(get_db)):
+    try:
+        validate_password_policy(body.password, body.username)
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+
     result = await db.execute(select(User).where(User.username == body.username))
     if result.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="そのユーザー名は既に使用されています")
@@ -93,13 +101,62 @@ async def register(body: UserRegister, db: AsyncSession = Depends(get_db)):
 @app.post("/auth/login", response_model=OtpChallengeResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     """ID/PWを検証し、OTPをSMS送信してチャレンジIDを発行する(フロー②)。"""
-    result = await db.execute(select(User).where(User.username == body.username))
+    now = datetime.now(timezone.utc)
+    result = await db.execute(select(User).where(User.username == body.username).with_for_update())
     user = result.scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="ユーザー名またはパスワードが正しくありません",
         )
+
+    if user.login_locked_until is not None:
+        locked_until = user.login_locked_until
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if now < locked_until:
+            retry_after = max(1, math.ceil((locked_until - now).total_seconds()))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="ログイン試行回数が上限に達しました。しばらくしてから再試行してください",
+                headers={"Retry-After": str(retry_after)},
+            )
+        user.failed_login_attempts = 0
+        user.login_locked_until = None
+
+    if not verify_password(body.password, user.password_hash):
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= settings.login_max_attempts:
+            user.login_locked_until = now + timedelta(minutes=settings.login_lock_minutes)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="ログイン試行回数が上限に達しました。しばらくしてから再試行してください",
+                headers={"Retry-After": str(settings.login_lock_minutes * 60)},
+            )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="ユーザー名またはパスワードが正しくありません",
+        )
+
+    user.failed_login_attempts = 0
+    user.login_locked_until = None
+
+    previous_otp_sent_at = user.last_otp_sent_at
+    if previous_otp_sent_at is not None:
+        if previous_otp_sent_at.tzinfo is None:
+            previous_otp_sent_at = previous_otp_sent_at.replace(tzinfo=timezone.utc)
+        retry_after = math.ceil(
+            settings.otp_resend_interval_seconds - (now - previous_otp_sent_at).total_seconds()
+        )
+        if retry_after > 0:
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="SMSは連続して送信できません。しばらくしてから再試行してください",
+                headers={"Retry-After": str(retry_after)},
+            )
 
     code = generate_otp_code()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.otp_expire_minutes)
@@ -109,6 +166,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         expires_at=expires_at,
         attempts_remaining=settings.otp_max_attempts,
     )
+    user.last_otp_sent_at = now
     db.add(challenge)
     await db.commit()
     await db.refresh(challenge)
@@ -120,6 +178,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
             user_reference=f"ip1-{user.username}"[:40],
         )
     except NexwaySmsError as exc:
+        user.last_otp_sent_at = previous_otp_sent_at
         await db.delete(challenge)
         await db.commit()
         raise HTTPException(
