@@ -14,9 +14,7 @@ class NexwaySmsError(Exception):
 def _normalize_phone_number(phone_number: str) -> str:
     digits = phone_number.replace("-", "")
     if digits.startswith("+81"):
-        return digits[3:]
-    if digits.startswith("0"):
-        return digits[1:]
+        return "0" + digits[3:]
     return digits
 
 

@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +34,7 @@ from app.schemas import (
 DEMO_USERNAME = "demo"
 DEMO_PASSWORD = "password"
 DEMO_PHONE_NUMBER = "09001111101"  # CPaaS NOW 開発環境のテスト用宛先(status: delivered)
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -114,7 +116,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         await send_sms(
             to=user.phone_number,
             text=f"ワンタイムパスワードは {code} です。",
-            user_reference=f"{settings.nexway_user_reference_prefix}-{challenge.id}",
+            user_reference=f"ip1-{user.username}"[:40],
         )
     except NexwaySmsError as exc:
         await db.delete(challenge)
@@ -122,6 +124,14 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"SMS送信に失敗しました: {exc.message}",
+        )
+
+    if settings.log_otp_code:
+        logger.warning(
+            "開発用OTP: username=%s challenge_id=%s code=%s",
+            user.username,
+            challenge.id,
+            code,
         )
 
     return OtpChallengeResponse(

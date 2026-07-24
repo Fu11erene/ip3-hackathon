@@ -15,11 +15,11 @@ class Settings(BaseSettings):
 
     nexway_api_base_url: str = "https://example.invalid"
     nexway_api_token: str = "changeme"
-    nexway_user_reference_prefix: str = "teamip3-hackathon"
 
     otp_code_length: int = 6
     otp_expire_minutes: int = 5
     otp_max_attempts: int = 5
+    log_otp_code: bool = False
 
     @property
     def database_url(self) -> str:
